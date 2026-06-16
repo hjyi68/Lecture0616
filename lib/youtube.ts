@@ -33,7 +33,14 @@ export async function listChannelVideos(
   const yt = await getClient();
   const channelId = await resolveChannelId(yt, handle);
   const channel = await yt.getChannel(channelId);
+  // eslint-disable-next-line no-console
+  console.log("[collect] channel tabs:", channel.tabs, "has_videos:", channel.has_videos);
   const videosTab = await channel.getVideos();
+  // eslint-disable-next-line no-console
+  console.log(
+    "[collect] videosTab.videos.length:",
+    (videosTab as { videos?: unknown[] }).videos?.length
+  );
 
   const videos: ChannelVideo[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
