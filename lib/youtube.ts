@@ -1,4 +1,4 @@
-import { Innertube } from "youtubei.js";
+import { Innertube, YTNodes } from "youtubei.js";
 
 export interface ChannelVideo {
   videoId: string;
@@ -20,6 +20,19 @@ function getClient() {
   return clientPromise;
 }
 
+function extractPublishedText(metadataRows: unknown): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = metadataRows as any[] | undefined;
+  if (!rows) return null;
+  for (const row of rows) {
+    for (const part of row.metadata_parts ?? []) {
+      const text = part.text?.text as string | undefined;
+      if (text && /전|ago/.test(text)) return text;
+    }
+  }
+  return null;
+}
+
 async function resolveChannelId(yt: Innertube, handle: string): Promise<string> {
   const endpoint = await yt.resolveURL(`https://www.youtube.com/${handle}`);
   const browseId = (endpoint.payload as { browseId?: string } | undefined)?.browseId;
@@ -33,28 +46,36 @@ export async function listChannelVideos(
   const yt = await getClient();
   const channelId = await resolveChannelId(yt, handle);
   const channel = await yt.getChannel(channelId);
-  // eslint-disable-next-line no-console
-  console.log("[collect] channel tabs:", channel.tabs, "has_videos:", channel.has_videos);
   const videosTab = await channel.getVideos();
-  // eslint-disable-next-line no-console
-  console.log(
-    "[collect] videosTab.videos.length:",
-    (videosTab as { videos?: unknown[] }).videos?.length
-  );
 
   const videos: ChannelVideo[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let current: any = videosTab;
   while (current) {
-    for (const item of current.videos) {
-      const videoId = item.id as string | undefined;
-      if (!videoId) continue;
+    for (const item of current.videos as unknown[]) {
+      const videoId = (item as { id?: string }).id;
+      if (videoId) {
+        videos.push({
+          videoId,
+          title: String((item as { title?: { text?: string } }).title?.text ?? ""),
+          publishedAt: (item as { published?: { text?: string } }).published?.text ?? null,
+        });
+        continue;
+      }
+    }
+
+    const lockups = current.memo?.getType(YTNodes.LockupView) ?? [];
+    for (const lockup of lockups as InstanceType<typeof YTNodes.LockupView>[]) {
+      if (lockup.content_type !== "VIDEO") continue;
+      const videoId = lockup.content_id;
+      if (!videoId || videos.some((v) => v.videoId === videoId)) continue;
       videos.push({
         videoId,
-        title: String(item.title?.text ?? ""),
-        publishedAt: item.published?.text ?? null,
+        title: String(lockup.metadata?.title?.text ?? ""),
+        publishedAt: extractPublishedText(lockup.metadata?.metadata?.metadata_rows),
       });
     }
+
     if (!current.has_continuation) break;
     current = await current.getContinuation();
   }
