@@ -15,7 +15,7 @@ let clientPromise: Promise<Innertube> | null = null;
 
 function getClient() {
   if (!clientPromise) {
-    clientPromise = Innertube.create({ generate_session_locally: true });
+    clientPromise = Innertube.create();
   }
   return clientPromise;
 }
