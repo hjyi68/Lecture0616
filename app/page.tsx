@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface VideoInsight {
   videoId: string;
@@ -15,6 +15,11 @@ interface InsightsResponse {
   videos: VideoInsight[];
 }
 
+interface ChatMessage {
+  role: "user" | "agent";
+  text: string;
+}
+
 const MARKET_SNAPSHOT = [
   { label: "KOSPI", value: "연동 예정" },
   { label: "KOSDAQ", value: "연동 예정" },
@@ -24,6 +29,14 @@ const MARKET_SNAPSHOT = [
 export default function Home() {
   const [insights, setInsights] = useState<InsightsResponse | null>(null);
   const [callOpen, setCallOpen] = useState(false);
+  const [voice, setVoice] = useState<"male" | "female">("male");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     fetch("/api/insights")
@@ -31,6 +44,75 @@ export default function Home() {
       .then(setInsights)
       .catch(() => setInsights(null));
   }, []);
+
+  async function sendMessage(text: string) {
+    if (!text.trim()) return;
+    setMessages((m) => [...m, { role: "user", text }]);
+    setBusy(true);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
+      const data = await res.json();
+      const answer: string = data.answer ?? data.error ?? "응답을 받지 못했습니다.";
+      setMessages((m) => [...m, { role: "agent", text: answer }]);
+      await playTts(answer);
+    } catch (e) {
+      setMessages((m) => [...m, { role: "agent", text: `오류: ${String(e)}` }]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function playTts(text: string) {
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice }),
+      });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.play();
+    } catch {
+      // 음성 재생 실패 시 텍스트 답변만 표시
+    }
+  }
+
+  async function startRecording() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream);
+    chunksRef.current = [];
+    recorder.ondataavailable = (e) => chunksRef.current.push(e.data);
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const audioBlob = new Blob(chunksRef.current, { type: "audio/webm" });
+      setBusy(true);
+      try {
+        const form = new FormData();
+        form.append("audio", audioBlob, "audio.webm");
+        const res = await fetch("/api/stt", { method: "POST", body: form });
+        const data = await res.json();
+        if (data.text) {
+          await sendMessage(data.text);
+        }
+      } finally {
+        setBusy(false);
+      }
+    };
+    recorder.start();
+    mediaRecorderRef.current = recorder;
+    setRecording(true);
+  }
+
+  function stopRecording() {
+    mediaRecorderRef.current?.stop();
+    setRecording(false);
+  }
 
   return (
     <main
@@ -209,6 +291,7 @@ export default function Home() {
             display: "flex",
             alignItems: "flex-end",
             justifyContent: "center",
+            zIndex: 50,
           }}
           onClick={() => setCallOpen(false)}
         >
@@ -218,31 +301,112 @@ export default function Home() {
               background: "#fff",
               width: "100%",
               maxWidth: 480,
+              maxHeight: "80vh",
+              display: "flex",
+              flexDirection: "column",
               borderRadius: "20px 20px 0 0",
               padding: 24,
-              marginBottom: 0,
             }}
           >
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>
-              에이전트와 대화
-            </h3>
-            <p style={{ fontSize: 13, color: "#999", marginBottom: 16 }}>
-              음성 대화 기능은 현재 준비 중입니다. 곧 OpenAI · ElevenLabs 연동이
-              완료되면 이 창에서 실시간으로 대화할 수 있습니다.
-            </p>
-            <button
-              onClick={() => setCallOpen(false)}
+            <div
               style={{
-                border: "1px solid #ddd",
-                borderRadius: 10,
-                padding: "8px 16px",
-                background: "#fafafa",
-                cursor: "pointer",
-                fontSize: 13,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 12,
               }}
             >
-              닫기
-            </button>
+              <h3 style={{ fontSize: 16, fontWeight: 700 }}>에이전트와 대화</h3>
+              <select
+                value={voice}
+                onChange={(e) => setVoice(e.target.value as "male" | "female")}
+                style={{
+                  fontSize: 12,
+                  border: "1px solid #ddd",
+                  borderRadius: 8,
+                  padding: "4px 8px",
+                }}
+              >
+                <option value="male">남자 목소리</option>
+                <option value="female">여자 목소리</option>
+              </select>
+            </div>
+
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                marginBottom: 12,
+                minHeight: 120,
+              }}
+            >
+              {messages.length === 0 && (
+                <p style={{ fontSize: 13, color: "#999" }}>
+                  마이크 버튼을 누르고 말하거나, 아래 입력창에 텍스트로
+                  질문해보세요.
+                </p>
+              )}
+              {messages.map((m, i) => (
+                <div
+                  key={i}
+                  style={{
+                    alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                    background: m.role === "user" ? "#111" : "#f3f3f3",
+                    color: m.role === "user" ? "#fff" : "#111",
+                    borderRadius: 12,
+                    padding: "8px 12px",
+                    fontSize: 13,
+                    maxWidth: "85%",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {m.text}
+                </div>
+              ))}
+              {busy && (
+                <div style={{ fontSize: 12, color: "#999" }}>생각하는 중...</div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={recording ? stopRecording : startRecording}
+                style={{
+                  border: "none",
+                  borderRadius: "50%",
+                  width: 44,
+                  height: 44,
+                  background: recording ? "#ef4444" : "#111",
+                  color: "#fff",
+                  fontSize: 18,
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+              >
+                {recording ? "■" : "🎙"}
+              </button>
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && input.trim()) {
+                    sendMessage(input);
+                    setInput("");
+                  }
+                }}
+                placeholder="텍스트로 질문하기"
+                style={{
+                  flex: 1,
+                  border: "1px solid #ddd",
+                  borderRadius: 10,
+                  padding: "0 12px",
+                  fontSize: 14,
+                }}
+              />
+            </div>
           </div>
         </div>
       )}
