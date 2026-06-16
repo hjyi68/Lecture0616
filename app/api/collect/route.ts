@@ -52,7 +52,9 @@ export async function GET(req: NextRequest) {
       await saveIndex(index);
       addedChunks += newEntries.length;
       processed.push(video.videoId);
-    } catch {
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[collect] failed video ${video.videoId}:`, err);
       failed.push(video.videoId);
     }
   }
