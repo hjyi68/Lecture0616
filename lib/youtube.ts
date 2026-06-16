@@ -20,11 +20,19 @@ function getClient() {
   return clientPromise;
 }
 
+async function resolveChannelId(yt: Innertube, handle: string): Promise<string> {
+  const endpoint = await yt.resolveURL(`https://www.youtube.com/${handle}`);
+  const browseId = (endpoint.payload as { browseId?: string } | undefined)?.browseId;
+  if (!browseId) throw new Error(`채널을 찾을 수 없습니다: ${handle}`);
+  return browseId;
+}
+
 export async function listChannelVideos(
   handle: string
 ): Promise<ChannelVideo[]> {
   const yt = await getClient();
-  const channel = await yt.getChannel(handle);
+  const channelId = await resolveChannelId(yt, handle);
+  const channel = await yt.getChannel(channelId);
   const videosTab = await channel.getVideos();
 
   const videos: ChannelVideo[] = [];
